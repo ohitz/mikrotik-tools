@@ -1,0 +1,138 @@
+#!/usr/bin/perl -w
+#
+# Copyright (C) 2015 Oliver Hitz <oliver@net-track.ch>
+#
+# Check state of BGP sessions on a Mikrotik router.
+#
+# Doesn't work with nagios' embedded perl, so switch it off:
+# nagios: -epn
+
+use Getopt::Long qw(:config no_ignore_case);
+use FindBin;
+use lib $FindBin::Bin;
+use Mtik;
+use strict;
+
+use constant {
+  STATE_OK => 0,
+  STATE_WARNING => 1,
+  STATE_CRITICAL => 2,
+  STATE_UNKNOWN => 3,
+};
+
+my $cfg_verbosity = 0;
+my $cfg_host;
+my $cfg_port = 8728;
+my $cfg_username;
+my $cfg_password;
+my $cfg_neighbor;
+
+sub usage
+{
+  print <<EOT;
+Usage: $0 [parameters]
+
+Parameters:
+
+-H hostname          Host (name or IP) to connect to
+-p port              API port (default: 8728)
+-U username          API username
+-P password          API password
+-N peer              BGP peer to check (IP address)
+
+-v, -vv              Increase verbosity
+EOT
+  exit(STATE_UNKNOWN);
+}
+
+sub debug
+{
+  my $verbose = shift;
+  my $format = shift;
+  my (@args) = @_;
+
+  if ($verbose <= $cfg_verbosity) {
+    printf $format, @args;
+  }  
+}
+
+sub quit
+{
+  my $status = shift;
+  my (@messages) = @_;
+  
+  my $status_text;
+  
+  if ($status == STATE_OK) {
+    $status_text = "OK";
+  } elsif ($status == STATE_WARNING) {
+    $status_text = "WARNING";
+  } elsif ($status == STATE_CRITICAL) {
+    $status_text = "CRITICAL";
+  } else {
+    $status_text = "UNKNOWN";
+  }
+
+  printf
+      "Peer %s - %s\n",
+      $status_text,
+      join(" | ", @messages);
+
+  exit($status);
+}
+
+if (!GetOptions("h|help" => sub { usage(); },
+                "v|verbose" => sub { $cfg_verbosity = 1; },
+                "vv" => sub { $cfg_verbosity = 2; },
+                "H|host=s" => \$cfg_host,
+                "p|port=i" => \$cfg_port,
+                "U|username=s" => \$cfg_username,
+                "P|password=s" => \$cfg_password,
+                "N|neighbor=s" => \$cfg_neighbor)) {
+  usage();
+}
+
+if (!$cfg_host || !$cfg_username || !$cfg_neighbor) {
+  usage();
+}
+
+debug(1, "Logging in to Mikrotik API\n");
+if (!Mtik::login($cfg_host, $cfg_username, $cfg_password, $cfg_port)) {
+  quit(STATE_CRITICAL, "Cannot connect to Mikrotik API.");
+}
+debug(1, "Ok, logged in\n");
+
+my (%peers) = Mtik::get_by_key("/routing/bgp/peer/print", "remote-address");
+
+if ($cfg_verbosity == 2) {
+  debug(3, "BGP peers:\n");
+
+  foreach my $peer_ip (keys %peers) {
+    printf
+        "%s: %s\n",
+        $peer_ip,
+        join(", ", map{qq{$_=$peers{$peer_ip}{$_}}} keys %{$peers{$peer_ip}});
+  }
+}
+
+my $peer = $peers{$cfg_neighbor};
+if (!$peer) {
+  quit(STATE_CRITICAL, sprintf("BGP peer %s not found.", $cfg_neighbor));
+}
+
+if ($peer->{disabled} eq "true") {
+  quit(STATE_CRITICAL,
+       sprintf("BGP session to peer %s is disabled", $cfg_neighbor),
+       sprintf("Peer details: %s", join(", ", map{qq{$_=$peer->{$_}}} keys %{$peer})));
+
+}  
+if ($peer->{state} ne "established") {
+  quit(STATE_CRITICAL,
+       sprintf("BGP session to peer %s is %s", $cfg_neighbor, $peer->{state}),
+       sprintf("Peer details: %s", join(", ", map{qq{$_=$peer->{$_}}} keys %{$peer})));
+}
+
+quit(STATE_OK,
+     sprintf("BGP session to %s is %s (prefixes=%d)", $cfg_neighbor, $peer->{state}, $peer->{"prefix-count"}),
+     sprintf("Peer details: %s", join(", ", map{qq{$_=$peer->{$_}}} keys %{$peer})));
+
