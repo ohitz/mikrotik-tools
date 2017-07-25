@@ -26,7 +26,8 @@ my $cfg_port = 8728;
 my $cfg_username;
 my $cfg_password;
 my $cfg_interface;
-my $cfg_state = "master";
+my $cfg_critical = "disabled";
+my $cfg_warning = "backup";
 
 sub usage
 {
@@ -40,7 +41,8 @@ Parameters:
 -U username          API username
 -P password          API password
 -I interface         Name of VRRP interface to check
--S state             Expected state: master, backup (default: master)
+-C state,state...    States to be considered as critical
+-W state,state...    States to be considered as warning
 
 -v, -vv              Increase verbosity
 EOT
@@ -76,7 +78,7 @@ sub quit
   }
 
   printf
-      "Peer %s - %s\n",
+      "VRRP interface %s - %s\n",
       $status_text,
       join(" | ", @messages);
 
@@ -91,7 +93,8 @@ if (!GetOptions("h|help" => sub { usage(); },
                 "U|username=s" => \$cfg_username,
                 "P|password=s" => \$cfg_password,
                 "I|interface=s" => \$cfg_interface,
-                "S|state=s" => \$cfg_state)) {
+                "C|crit=s" => \$cfg_critical,
+                "W|warn=s" => \$cfg_warning)) {
   usage();
 }
 
@@ -120,37 +123,29 @@ if ($cfg_verbosity == 2) {
 
 my $vrrp_if = $vrrp_ifs{$cfg_interface};
 if (!$vrrp_if) {
-  quit(STATE_CRITICAL, sprintf("VRRP interface %s not found.", $cfg_interface));
-}
-
-if ($vrrp_if->{disabled} eq "true") {
-  quit(STATE_CRITICAL,
-       sprintf("VRRP interface %s is disabled", $cfg_interface),
-       sprintf("Interface details: %s", join(", ", map{qq{$_=$vrrp_if->{$_}}} keys %{$vrrp_if})));
-
+  quit(STATE_CRITICAL, sprintf("VRRP interface '%s' not found.", $cfg_interface));
 }
 
 my $vrrp_state = "unknown";
-if (defined($vrrp_if->{master}) && $vrrp_if->{master} eq "true") {
+
+if ($vrrp_if->{disabled} eq "true") {
+  $vrrp_state = "disabled";
+} elsif (defined($vrrp_if->{master}) && $vrrp_if->{master} eq "true") {
   $vrrp_state = "master";
 } elsif (defined($vrrp_if->{backup}) && $vrrp_if->{backup} eq "true") {
   $vrrp_state = "backup";
 }
 
-if ($cfg_state eq "master") {
-  if ($vrrp_state ne "master") {
-    quit(STATE_CRITICAL,
-         sprintf("VRRP interface %s is %s", $cfg_interface, $vrrp_state),
-         sprintf("Interface details: %s", join(", ", map{qq{$_=$vrrp_if->{$_}}} keys %{$vrrp_if})));
-  }
-} else {
-  if ($vrrp_state ne "backup") {
-    quit(STATE_CRITICAL,
-         sprintf("VRRP interface %s is %s", $cfg_interface, $vrrp_state),
-         sprintf("Interface details: %s", join(", ", map{qq{$_=$vrrp_if->{$_}}} keys %{$vrrp_if})));
-  }
+if (grep { $_ eq $vrrp_state } split(/,/, $cfg_warning)) {
+  quit(STATE_WARNING,
+       sprintf("VRRP interface %s is %s", $cfg_interface, $vrrp_state),
+       sprintf("Interface details: %s", join(", ", map{qq{$_=$vrrp_if->{$_}}} keys %{$vrrp_if})));
+} elsif (grep { $_ eq $vrrp_state } split(/,/, $cfg_critical)) {
+  quit(STATE_CRITICAL,
+       sprintf("VRRP interface '%s' is %s", $cfg_interface, $vrrp_state),
+       sprintf("Interface details: %s", join(", ", map{qq{$_=$vrrp_if->{$_}}} keys %{$vrrp_if})));
 }
 
 quit(STATE_OK,
-     sprintf("VRRP interface %s is %s", $cfg_interface, $vrrp_state),
+     sprintf("VRRP interface '%s' is %s", $cfg_interface, $vrrp_state),
      sprintf("Interface details: %s", join(", ", map{qq{$_=$vrrp_if->{$_}}} keys %{$vrrp_if})));
